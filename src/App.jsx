@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import * as THREE from "three";
 import { supabase } from "./supabaseClient";
+import { MASTER_GAMES } from "./masterImport"; // canonical master library (from the Google Sheet)
 
 /* ═══════════════════════════════════════════════════════════════════════════
    GAME QUEUE — v4 / DEEP SPACE
@@ -596,6 +597,33 @@ async function clearCloud(userId) {
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
 const hueOf = g => GENRE_HUES[g] || GENRE_HUES.Other;
 const consoleOf = id => CONSOLE_GROUPS.find(c => c.id === id);
+
+// The console a game "belongs to" for filtering: the real launch console
+// recorded on the entry (from the master-sheet import) if present, otherwise
+// the best-effort heuristic. Keeps older/hand-added entries working.
+const launchOf = g => g.launchConsole || launchConsoleOf(g.name);
+
+// Format a precise ISO beat date (yyyy-mm-dd) as MM/DD/YYYY. Returns null for
+// entries without a precise date (year-only / "Childhood" / backlog).
+function fmtBeaten(iso) {
+  if (!iso) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : null;
+}
+
+// Fuzzy-match a game name to the built-in art DB to recover cover + release
+// year (sheet names have punctuation/typo drift, e.g. "Mario RPG"). Best effort:
+// exact, then normalized-equality, then substring both ways.
+const normName = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+function matchGameDb(name) {
+  const exact = GAME_DB.find(g => g.name.toLowerCase() === name.toLowerCase());
+  if (exact) return exact;
+  const n = normName(name);
+  if (n.length < 3) return null;
+  return GAME_DB.find(g => normName(g.name) === n)
+      || GAME_DB.find(g => { const gn = normName(g.name); return gn.includes(n) || n.includes(gn); })
+      || null;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    STARFIELD
@@ -3531,7 +3559,28 @@ function BrowseTab({ existingGames, onAdd, onClose }) {
    MAIN APP TABS
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function GameCard({ game, onClick, onToggle, size = "md" }) {
+// The queue position indicator on a Queue card: a chrome/cyan digit hugging the
+// box corner that gently bobs and glows in a soft pulse. Pure CSS (keyframes
+// injected once in App) — no WebGL context per card.
+function QueueRank({ n, size = "md" }) {
+  const fontSize = size === "xs" ? "12px" : size === "sm" ? "16px" : "20px";
+  return (
+    <div style={{
+      position: "absolute", top: "-6px", left: "-6px", zIndex: 3,
+      pointerEvents: "none",
+      animation: "queue-rank-float 2.6s ease-in-out infinite",
+    }}>
+      <div style={{
+        fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize, lineHeight: 1,
+        color: PAL.cyan,
+        WebkitFontSmoothing: "antialiased",
+        animation: "queue-rank-pulse 2.2s ease-in-out infinite",
+      }}>{n}</div>
+    </div>
+  );
+}
+
+function GameCard({ game, onClick, onDoubleClick, onToggle, size = "md", queueNumber }) {
   const hue = hueOf(game.genre);
   const c = consoleOf(game.console);
   const isXs = size === "xs";
@@ -3553,7 +3602,11 @@ function GameCard({ game, onClick, onToggle, size = "md" }) {
         }} />
       )}
       {/* 3D box — clickable to open detail */}
-      <div onClick={onClick} style={{ position: "relative", zIndex: 1, cursor: "pointer" }}>
+      <div onClick={onClick} onDoubleClick={onDoubleClick} style={{ position: "relative", zIndex: 1, cursor: "pointer" }}>
+        {/* Queue rank — a chrome/cyan digit hugging the box's top-left corner,
+            spinning on its Y axis and gently floating like the 3D box itself.
+            CSS-3D (no extra WebGL context). */}
+        {queueNumber != null && <QueueRank n={queueNumber} size={size} />}
         <LazyGameBox game={game} size={boxSize} selected={game.completed} />
         {game.percent100 && (
           <div style={{
@@ -3566,15 +3619,20 @@ function GameCard({ game, onClick, onToggle, size = "md" }) {
         )}
       </div>
       {/* Floating text — fixed heights so cards align regardless of title length */}
-      <div onClick={onClick} style={{ position: "relative", zIndex: 1, marginTop: isXs ? "2px" : "4px", width: "100%", cursor: "pointer" }}>
+      <div onClick={onClick} onDoubleClick={onDoubleClick} style={{ position: "relative", zIndex: 1, marginTop: isXs ? "2px" : "4px", width: "100%", cursor: "pointer" }}>
         <div style={{ fontFamily: FONT_DISPLAY, fontSize: isXs ? "5px" : isSm ? "6px" : "7px", color: hue, letterSpacing: "1px", fontWeight: 600, textShadow: `0 0 6px ${hue}88`, marginBottom: "2px", height: isXs ? "8px" : isSm ? "10px" : "12px", overflow: "hidden" }}>{(game.franchise || "—").toUpperCase()}</div>
         <div style={{ fontFamily: FONT_DISPLAY, fontSize: isXs ? "8px" : isSm ? "9px" : "11px", color: PAL.ink, lineHeight: 1.15, fontWeight: 500, height: isXs ? "18px" : isSm ? "22px" : "27px", textShadow: `0 0 6px ${PAL.void}`, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{game.name}</div>
-        <div style={{ fontFamily: FONT_BODY, fontSize: isXs ? "9px" : isSm ? "10px" : "11px", color: PAL.inkDim, marginTop: "2px", height: isXs ? "14px" : isSm ? "16px" : "18px", overflow: "hidden" }}>
-          {c?.label || "—"}{game.completed && game.date ? ` · ${game.date}` : ""}
+        <div style={{ fontFamily: FONT_BODY, fontSize: isXs ? "9px" : isSm ? "10px" : "11px", color: PAL.inkDim, marginTop: "2px", height: isXs ? "20px" : isSm ? "24px" : "28px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", lineHeight: 1.2 }}>
+          {c?.label ? (
+            <>
+              <span style={{ color: PAL.inkFaint, fontSize: "0.82em", letterSpacing: "0.5px" }}>{game.completed ? "BEATEN ON " : "PLAYING ON "}</span>
+              {c.label}{game.completed && (fmtBeaten(game.beatenOn) || game.date) ? ` · ${fmtBeaten(game.beatenOn) || game.date}` : ""}
+            </>
+          ) : (game.completed && game.date ? game.date : "—")}
         </div>
       </div>
       {/* Beaten toggle — compact floating button */}
-      <button onClick={(e) => { e.stopPropagation(); onToggle({ completed: !game.completed }); }} style={{
+      <button data-notap onClick={(e) => { e.stopPropagation(); onToggle({ completed: !game.completed }); }} style={{
         marginTop: isXs ? "2px" : isSm ? "4px" : "6px", position: "relative", zIndex: 1,
         background: "transparent", border: `1px solid ${game.completed ? PAL.emerald : PAL.line}`,
         color: game.completed ? PAL.emerald : PAL.inkDim,
@@ -3630,7 +3688,7 @@ function LibraryTab({ games, onClick, onToggle }) {
     const s = new Set();
     for (const g of games) {
       if (g.console) s.add(g.console);
-      const launch = launchConsoleOf(g.name);
+      const launch = launchOf(g);
       if (launch) s.add(launch);
     }
     return ["ALL", ...s];
@@ -3643,7 +3701,7 @@ function LibraryTab({ games, onClick, onToggle }) {
       if (status === "HUNDRED" && !g.percent100) return false;
       if (genre !== "ALL" && g.genre !== genre) return false;
       // Match the played-on console OR the game's original launch console.
-      if (console_ !== "ALL" && g.console !== console_ && launchConsoleOf(g.name) !== console_) return false;
+      if (console_ !== "ALL" && g.console !== console_ && launchOf(g) !== console_) return false;
       if (search && !`${g.name} ${g.franchise}`.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
@@ -3911,7 +3969,7 @@ function LibraryTab({ games, onClick, onToggle }) {
    Works with touch and mouse via Pointer Events.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
+function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12, onItemTap, onItemDoubleTap }) {
   const containerRef = useRef(null);
   const itemRefs = useRef([]);
   const [dragState, setDragState] = useState(null); // { id, fromIdx, x, y, offsetX, offsetY, hoverIdx }
@@ -3919,6 +3977,11 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
   const startPos = useRef(null);
   const activePointerId = useRef(null);
   const justDragged = useRef(false);
+  const pressedIdx = useRef(null);
+  const pointerType = useRef(null);
+  const lastTap = useRef({ idx: null, t: 0 }); // for double-tap detection
+  const tapTimer = useRef(null);               // deferred single-tap action
+  const tapBlocked = useRef(false);            // press started on an opt-out element
 
   // Reset refs when items change
   itemRefs.current = items.map((_, i) => itemRefs.current[i] || null);
@@ -3946,18 +4009,25 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
     // Only handle primary button / single touch
     if (e.button !== undefined && e.button !== 0) return;
     activePointerId.current = e.pointerId;
+    pointerType.current = e.pointerType;
+    pressedIdx.current = idx;
+    // Presses that begin on an opt-out element (e.g. the beat toggle) don't count
+    // as a card tap.
+    tapBlocked.current = !!(e.target && e.target.closest && e.target.closest("[data-notap]"));
     startPos.current = { x: e.clientX, y: e.clientY };
-    // Start long-press timer
-    longPressTimer.current = setTimeout(() => {
-      pickUp(idx, e);
-    }, 350);
+    // Touch/pen: long-press to pick up, so a normal swipe still scrolls the page.
+    // Mouse (desktop): no long-press — dragging begins as soon as the cursor
+    // moves past a small threshold (see onPointerMove), i.e. plain click-and-drag.
+    if (e.pointerType !== "mouse") {
+      longPressTimer.current = setTimeout(() => { pickUp(idx, e); }, 350);
+    }
     // Capture so we keep getting events
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e) => {
     if (e.pointerId !== activePointerId.current) return;
-    // Cancel long-press if moved too far before it fired
+    // Cancel touch long-press if the finger moved too far before it fired (scroll intent)
     if (longPressTimer.current && startPos.current) {
       const dx = e.clientX - startPos.current.x;
       const dy = e.clientY - startPos.current.y;
@@ -3965,6 +4035,14 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
         clearTimeout(longPressTimer.current);
         longPressTimer.current = null;
       }
+    }
+    // Mouse click-drag: start dragging once the cursor moves past a threshold.
+    // Kept generous (10px) so an ordinary click's jitter doesn't start a drag —
+    // that would otherwise swallow the click (and break double-click-to-front).
+    if (!dragState && pointerType.current === "mouse" && pressedIdx.current != null && startPos.current) {
+      const dx = e.clientX - startPos.current.x;
+      const dy = e.clientY - startPos.current.y;
+      if (Math.abs(dx) > 10 || Math.abs(dy) > 10) pickUp(pressedIdx.current, e);
     }
     if (!dragState) return;
     // Prevent default scroll while dragging
@@ -3991,10 +4069,13 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
   const onPointerUp = (e) => {
     if (e.pointerId !== activePointerId.current) return;
     activePointerId.current = null;
+    const idxAtDown = pressedIdx.current;
+    pressedIdx.current = null;
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
+    let reordered = false;
     if (dragState) {
       const { fromIdx, hoverIdx } = dragState;
       if (fromIdx !== hoverIdx) {
@@ -4003,12 +4084,31 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
         next.splice(hoverIdx, 0, moved);
         onReorder(next);
         if (navigator.vibrate) navigator.vibrate(15);
+        reordered = true;
       }
       setDragState(null);
-      // Block the subsequent synthetic click event so we don't open the modal
-      // after dropping
-      justDragged.current = true;
-      setTimeout(() => { justDragged.current = false; }, 300);
+    }
+    // Tap vs double-tap — handled here (not via native click/dblclick, which are
+    // unreliable while the pointer is captured for dragging). A real reorder or a
+    // press that started on an opt-out element is never a tap.
+    if (!reordered && idxAtDown != null && !tapBlocked.current) {
+      const tapped = items[idxAtDown];
+      const now = performance.now();
+      const lt = lastTap.current;
+      if (lt.idx === idxAtDown && now - lt.t < 450) {
+        if (tapTimer.current) { clearTimeout(tapTimer.current); tapTimer.current = null; }
+        lastTap.current = { idx: null, t: 0 };
+        onItemDoubleTap && onItemDoubleTap(tapped);
+      } else {
+        lastTap.current = { idx: idxAtDown, t: now };
+        if (tapTimer.current) clearTimeout(tapTimer.current);
+        // Defer the single-tap action so a following tap can upgrade it to a
+        // double before it fires.
+        tapTimer.current = setTimeout(() => {
+          tapTimer.current = null; lastTap.current = { idx: null, t: 0 };
+          onItemTap && onItemTap(tapped);
+        }, 350);
+      }
     }
   };
 
@@ -4017,6 +4117,7 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
     longPressTimer.current = null;
     setDragState(null);
     activePointerId.current = null;
+    pressedIdx.current = null;
   };
 
   return (
@@ -4053,6 +4154,7 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
                 transition: dragState ? "transform 0.15s, opacity 0.15s" : "none",
                 position: "relative",
                 touchAction: "auto",
+                cursor: dragState ? "grabbing" : "grab",
               }}
             >
               {isHoverTarget && (
@@ -4091,12 +4193,14 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12 }) {
   );
 }
 
-function QueueTab({ games, onClick, onToggle, onReorder }) {
+function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
   const [genre, setGenre] = useState("ALL");
   const [console_, setConsole_] = useState("ALL");
   const [sort, setSort] = useState("CUSTOM");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
+  const [cols, setCols] = useState(2); // grid density for the drag view: 2×2 / 3×3 / 4×4
+  const cardSize = cols >= 4 ? "xs" : cols === 3 ? "sm" : "md";
 
   const queue = useMemo(() => games.filter(g => !g.completed), [games]);
 
@@ -4106,7 +4210,7 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
     const s = new Set();
     for (const g of queue) {
       if (g.console) s.add(g.console);
-      const launch = launchConsoleOf(g.name);
+      const launch = launchOf(g);
       if (launch) s.add(launch);
     }
     return ["ALL", ...s];
@@ -4130,7 +4234,7 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
     return masterOrdered.filter(g => {
       if (genre !== "ALL" && g.genre !== genre) return false;
       // Match the played-on console OR the game's original launch console.
-      if (console_ !== "ALL" && g.console !== console_ && launchConsoleOf(g.name) !== console_) return false;
+      if (console_ !== "ALL" && g.console !== console_ && launchOf(g) !== console_) return false;
       return true;
     });
   }, [masterOrdered, genre, console_]);
@@ -4145,6 +4249,19 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
   }, [genre, console_]);
 
   const clearFilters = () => { setGenre("ALL"); setConsole_("ALL"); };
+
+  // Move a game to the front of the master queue (re-indexes everyone).
+  const moveToFront = useCallback((g) => {
+    const order = [g, ...masterOrdered.filter(x => x.id !== g.id)];
+    onReorder(order.map((x, i) => ({ ...x, queueOrder: i * 10 })));
+  }, [masterOrdered, onReorder]);
+
+  // Tap opens the game; double-tap moves it to the front. Detection lives in
+  // DraggableGrid's pointer handlers (native click/dblclick are unreliable under
+  // pointer capture). onCloseModal is a safety net in case a tap already opened
+  // the modal before a double-tap landed.
+  const openGame = useCallback((g) => onClick(g), [onClick]);
+  const jumpToFront = useCallback((g) => { onCloseModal?.(); moveToFront(g); }, [moveToFront, onCloseModal]);
 
   // Group while preserving master order — groups themselves are ordered by
   // the master-order position of the first game in each group, so the genre
@@ -4291,21 +4408,31 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
       ) : sort === "CUSTOM" ? (
         // Drag-to-reorder grid
         <>
-          <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: PAL.inkFaint, marginBottom: "12px", fontStyle: "italic" }}>
-            ◇ Long-press a game and drag to reorder your queue.
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "12px", flexWrap: "wrap" }}>
+            <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: PAL.inkFaint, fontStyle: "italic" }}>
+              ◇ Tap to open · double-tap to jump to front · drag to reorder (long-press on touch).
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontFamily: FONT_DISPLAY, fontSize: "9px", color: PAL.inkFaint, letterSpacing: "2px" }}>VIEW</span>
+              <Chip color={PAL.violet} active={cols === 2} onClick={() => setCols(2)}>2×2</Chip>
+              <Chip color={PAL.violet} active={cols === 3} onClick={() => setCols(3)}>3×3</Chip>
+              <Chip color={PAL.violet} active={cols === 4} onClick={() => setCols(4)}>4×4</Chip>
+            </div>
           </div>
           <DraggableGrid
             items={filtered}
-            cols={2}
+            cols={cols}
             gap={12}
+            onItemTap={openGame}
+            onItemDoubleTap={jumpToFront}
             onReorder={(newOrder) => {
               // Persist new positions via queueOrder field on each game.
               // Use indexed values so future items can be inserted between.
               const updates = newOrder.map((g, i) => ({ ...g, queueOrder: i * 10 }));
               onReorder(updates);
             }}
-            renderItem={(g) => (
-              <GameCard game={g} onClick={() => onClick(g)} onToggle={p => onToggle(g.id, p)} />
+            renderItem={(g, idx) => (
+              <GameCard game={g} size={cardSize} queueNumber={idx + 1} onToggle={p => onToggle(g.id, p)} />
             )}
           />
         </>
@@ -4319,7 +4446,7 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
               <div style={{ fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint }}>{list.length}</div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "12px" }}>
-              {list.map(g => <GameCard key={g.id} game={g} onClick={() => onClick(g)} onToggle={p => onToggle(g.id, p)} />)}
+              {list.map(g => <GameCard key={g.id} game={g} onClick={() => openGame(g)} onToggle={p => onToggle(g.id, p)} />)}
             </div>
           </div>
         ))
@@ -4337,7 +4464,7 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
                 <div style={{ fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint }}>{list.length}</div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "12px" }}>
-                {list.map(g => <GameCard key={g.id} game={g} onClick={() => onClick(g)} onToggle={p => onToggle(g.id, p)} />)}
+                {list.map(g => <GameCard key={g.id} game={g} onClick={() => openGame(g)} onToggle={p => onToggle(g.id, p)} />)}
               </div>
             </div>
           );
@@ -4347,7 +4474,69 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
   );
 }
 
+// Effective beat date used for ordering a Stats dropdown: the precise date when
+// known, else the start of the year bucket, else a low sentinel so "Childhood"
+// and undated games sink to the bottom.
+function beatKey(g) {
+  if (g.beatenOn) return g.beatenOn;
+  const d = (g.date || "").trim();
+  if (/^\d{4}$/.test(d)) return `${d}-00-00`;
+  if (d.toLowerCase() === "childhood") return "0001-00-00";
+  return "0000-00-00";
+}
+// Order games within a Stats dropdown by date beaten, most recent first;
+// ties (same year / same bucket) fall back to alphabetical.
+function beatenCmp(a, b) {
+  const c = beatKey(b).localeCompare(beatKey(a));
+  return c !== 0 ? c : a.name.localeCompare(b.name);
+}
+// Group a game list by an arbitrary key, dropping falsy keys, each group sorted.
+function groupBeaten(list, keyFn) {
+  const m = {};
+  list.forEach(g => { const k = keyFn(g); if (k) (m[k] = m[k] || []).push(g); });
+  Object.values(m).forEach(l => l.sort(beatenCmp));
+  return m;
+}
+// The indented game list revealed when a Stats section row is expanded. Shows
+// each game's beaten date (DD/MM/YYYY when precise, else the year/"Childhood").
+// When `groupConsole` is given (the Hardware section), each game shows its
+// original launch console in parentheses when that differs from the console the
+// row is grouped under — e.g. an emulator-beaten game shows "(Nintendo 64)".
+function StatGameList({ games, accent = PAL.emerald, groupConsole }) {
+  return (
+    <div style={{ padding: "2px 0 12px 19px", marginLeft: "4px", borderLeft: `1px solid ${accent}44` }}>
+      {games.map(g => {
+        const launch = groupConsole ? launchOf(g) : null;
+        const launchLabel = launch && launch !== groupConsole ? (consoleOf(launch)?.label || launch) : null;
+        return (
+          <div key={g.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", padding: "5px 0 5px 10px" }}>
+            <span style={{ fontFamily: FONT_BODY, fontSize: "13px", color: PAL.inkDim, fontWeight: 400 }}>
+              <span style={{ color: hueOf(g.genre), marginRight: "8px" }}>◇</span>{g.name}
+              {launchLabel && <span style={{ color: PAL.inkFaint, marginLeft: "6px" }}>({launchLabel})</span>}
+            </span>
+            <span style={{ fontFamily: FONT_MONO, fontSize: "11px", color: PAL.inkFaint, whiteSpace: "nowrap" }}>{fmtBeaten(g.beatenOn) || g.date || "—"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+// A clickable Stats row header (chevron + caller-supplied content + count).
+function StatRow({ open, onToggle, accent, count, children }) {
+  return (
+    <div onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", cursor: "pointer", gap: "10px" }}>
+      <span style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
+        <span style={{ fontFamily: FONT_MONO, fontSize: "9px", color: open ? accent : PAL.inkFaint, display: "inline-block", transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
+        {children}
+      </span>
+      <span style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.emerald }}>{count}</span>
+    </div>
+  );
+}
+
 function StatsTab({ games }) {
+  const [openKey, setOpenKey] = useState(null); // "section:value" of the expanded row (one at a time)
+  const toggle = k => setOpenKey(openKey === k ? null : k);
   const completed = games.filter(g => g.completed);
   const hundred = games.filter(g => g.percent100);
   const backlog = games.length - completed.length;
@@ -4361,6 +4550,12 @@ function StatsTab({ games }) {
     completed.forEach(g => { if (g.date) m[g.date] = (m[g.date] || 0) + 1; });
     return Object.entries(m).sort(([a],[b]) => { if (a === "Childhood") return 1; if (b === "Childhood") return -1; return parseInt(b) - parseInt(a); });
   }, [completed]);
+  // Games grouped for each section's expandable dropdown, each sorted
+  // newest-beaten first (see beatenCmp).
+  const gamesByYear = useMemo(() => groupBeaten(completed, g => g.date), [completed]);
+  const gamesByGenre = useMemo(() => groupBeaten(completed, g => g.genre || "Other"), [completed]);
+  const gamesByConsole = useMemo(() => groupBeaten(completed, g => g.console), [completed]);
+  const gamesByFranchise = useMemo(() => groupBeaten(completed, g => g.franchise), [completed]);
   const byFranchise = useMemo(() => {
     const m = {};
     completed.forEach(g => { if (g.franchise) m[g.franchise] = (m[g.franchise] || 0) + 1; });
@@ -4388,17 +4583,26 @@ function StatsTab({ games }) {
         <Panel style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Genre Distribution</Label>
           <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "14px" }}>
-            {byGenre.map(([g, c]) => (
-              <div key={g}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                  <span style={{ fontFamily: FONT_DISPLAY, fontSize: "12px", color: hueOf(g), letterSpacing: "2px", fontWeight: 500 }}>{g}</span>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: "11px", color: PAL.inkDim }}>{c}</span>
+            {byGenre.map(([g, c]) => {
+              const open = openKey === `genre:${g}`;
+              return (
+                <div key={g}>
+                  <div onClick={() => toggle(`genre:${g}`)} style={{ cursor: "pointer" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", gap: "10px" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: "9px", color: open ? hueOf(g) : PAL.inkFaint, display: "inline-block", transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
+                        <span style={{ fontFamily: FONT_DISPLAY, fontSize: "12px", color: hueOf(g), letterSpacing: "2px", fontWeight: 500, textShadow: open ? `0 0 10px ${hueOf(g)}66` : "none" }}>{g}</span>
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: "11px", color: PAL.inkDim }}>{c}</span>
+                    </div>
+                    <div style={{ height: "4px", background: PAL.bg, position: "relative", borderRadius: "2px", overflow: "hidden" }}>
+                      <div style={{ position: "absolute", inset: 0, width: `${(c/maxG)*100}%`, background: hueOf(g), boxShadow: `0 0 16px ${hueOf(g)}` }} />
+                    </div>
+                  </div>
+                  {open && <StatGameList games={gamesByGenre[g] || []} accent={hueOf(g)} />}
                 </div>
-                <div style={{ height: "4px", background: PAL.bg, position: "relative", borderRadius: "2px", overflow: "hidden" }}>
-                  <div style={{ position: "absolute", inset: 0, width: `${(c/maxG)*100}%`, background: hueOf(g), boxShadow: `0 0 16px ${hueOf(g)}` }} />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Panel>
       )}
@@ -4408,10 +4612,14 @@ function StatsTab({ games }) {
           <div style={{ marginTop: "12px" }}>
             {byConsole.map(([cid, c]) => {
               const cons = consoleOf(cid);
+              const accent = cons?.color || PAL.ink;
+              const open = openKey === `console:${cid}`;
               return (
-                <div key={cid} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${PAL.line}` }}>
-                  <span style={{ fontFamily: FONT_DISPLAY, fontSize: "12px", color: cons?.color || PAL.ink, letterSpacing: "1px", fontWeight: 500 }}>{cons?.label || cid}</span>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.emerald }}>{c}</span>
+                <div key={cid} style={{ borderBottom: `1px solid ${PAL.line}` }}>
+                  <StatRow open={open} onToggle={() => toggle(`console:${cid}`)} accent={accent} count={c}>
+                    <span style={{ fontFamily: FONT_DISPLAY, fontSize: "12px", color: accent, letterSpacing: "1px", fontWeight: 500, textShadow: open ? `0 0 10px ${accent}66` : "none" }}>{cons?.label || cid}</span>
+                  </StatRow>
+                  {open && <StatGameList games={gamesByConsole[cid] || []} accent={accent} groupConsole={cid} />}
                 </div>
               );
             })}
@@ -4422,12 +4630,17 @@ function StatsTab({ games }) {
         <Panel style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Timeline</Label>
           <div style={{ marginTop: "12px" }}>
-            {byYear.map(([y, c]) => (
-              <div key={y} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${PAL.line}` }}>
-                <span style={{ fontFamily: FONT_DISPLAY, fontSize: "14px", color: PAL.ink, letterSpacing: "2px", fontWeight: 500 }}>{y}</span>
-                <span style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.emerald }}>{c}</span>
-              </div>
-            ))}
+            {byYear.map(([y, c]) => {
+              const open = openKey === `year:${y}`;
+              return (
+                <div key={y} style={{ borderBottom: `1px solid ${PAL.line}` }}>
+                  <StatRow open={open} onToggle={() => toggle(`year:${y}`)} accent={PAL.emerald} count={c}>
+                    <span style={{ fontFamily: FONT_DISPLAY, fontSize: "14px", color: open ? PAL.emerald : PAL.ink, letterSpacing: "2px", fontWeight: 500, textShadow: open ? `0 0 10px ${PAL.emerald}66` : "none" }}>{y}</span>
+                  </StatRow>
+                  {open && <StatGameList games={gamesByYear[y] || []} accent={PAL.emerald} />}
+                </div>
+              );
+            })}
           </div>
         </Panel>
       )}
@@ -4435,12 +4648,17 @@ function StatsTab({ games }) {
         <Panel style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Top Franchises</Label>
           <div style={{ marginTop: "12px" }}>
-            {byFranchise.map(([f, c], i) => (
-              <div key={f} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: i === byFranchise.length - 1 ? "none" : `1px solid ${PAL.line}` }}>
-                <span style={{ fontFamily: FONT_DISPLAY, fontSize: "14px", color: PAL.ink, fontWeight: 500, letterSpacing: "1px" }}><span style={{ color: PAL.amber, marginRight: "10px", fontFamily: FONT_MONO }}>#{i+1}</span>{f}</span>
-                <span style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.emerald }}>{c}</span>
-              </div>
-            ))}
+            {byFranchise.map(([f, c], i) => {
+              const open = openKey === `franchise:${f}`;
+              return (
+                <div key={f} style={{ borderBottom: i === byFranchise.length - 1 ? "none" : `1px solid ${PAL.line}` }}>
+                  <StatRow open={open} onToggle={() => toggle(`franchise:${f}`)} accent={PAL.amber} count={c}>
+                    <span style={{ fontFamily: FONT_DISPLAY, fontSize: "14px", color: open ? PAL.amber : PAL.ink, fontWeight: 500, letterSpacing: "1px", textShadow: open ? `0 0 10px ${PAL.amber}66` : "none" }}><span style={{ color: PAL.amber, marginRight: "10px", fontFamily: FONT_MONO }}>#{i+1}</span>{f}</span>
+                  </StatRow>
+                  {open && <StatGameList games={gamesByFranchise[f] || []} accent={PAL.amber} />}
+                </div>
+              );
+            })}
           </div>
         </Panel>
       )}
@@ -4462,8 +4680,9 @@ function StatsTab({ games }) {
   );
 }
 
-function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email }) {
+function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email, onImportMaster }) {
   const [confirm, setConfirm] = useState(false);
+  const [importConfirm, setImportConfirm] = useState(false); // master-library restore confirm
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(profile.name || "");
 
@@ -4546,6 +4765,21 @@ function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email 
         <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, marginBottom: "14px", fontWeight: 300 }}>Sign out on this device. Your queue stays safe in the cloud.</div>
         <Btn onClick={onLogout} color={PAL.cyan} size="sm">SIGN OUT</Btn>
       </Panel>
+      {/* Restore the canonical master library (from the Google Sheet) — the default baseline. */}
+      {onImportMaster && (
+        <Panel glow={PAL.amber} style={{ padding: "20px", marginBottom: "16px" }}>
+          <Label color={PAL.amber}>◇ Master Library</Label>
+          <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, marginBottom: "14px", marginTop: "8px", fontWeight: 300 }}>Resets your library to the master log ({MASTER_GAMES.length} games, with precise beat dates). Keeps your pilot profile.</div>
+          {importConfirm ? (
+            <div style={{ display: "flex", gap: "8px" }}>
+              <Btn onClick={() => { onImportMaster(); setImportConfirm(false); }} color={PAL.amber} size="sm">CONFIRM RESTORE</Btn>
+              <Btn onClick={() => setImportConfirm(false)} color={PAL.inkDim} size="sm">CANCEL</Btn>
+            </div>
+          ) : (
+            <Btn onClick={() => setImportConfirm(true)} color={PAL.amber} size="sm">RESTORE MASTER LOG</Btn>
+          )}
+        </Panel>
+      )}
       <Panel glow={PAL.danger} style={{ padding: "20px" }}>
         <Label color={PAL.danger}>◇ Self-Destruct</Label>
         <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, marginBottom: "14px", marginTop: "8px", fontWeight: 300 }}>Wipes all data. Cannot be undone.</div>
@@ -4803,6 +5037,11 @@ export default function App() {
     style.textContent = `
       .hide-scrollbar::-webkit-scrollbar { display: none; }
       .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      @keyframes queue-rank-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+      @keyframes queue-rank-pulse {
+        0%,100% { text-shadow: 0 0 5px #4fdfff88, 0 0 10px #4fdfff33; opacity: 0.9; }
+        50%     { text-shadow: 0 0 11px #4fdfffff, 0 0 22px #4fdfff88; opacity: 1; }
+      }
     `;
     document.head.appendChild(style);
     document.body.style.background = PAL.void;
@@ -4877,6 +5116,17 @@ export default function App() {
   const updateProfile = useCallback((patch) => setProfile(prev => ({ ...prev, ...patch })), []);
   const logout = async () => { await supabase.auth.signOut(); };
 
+  // Restore the canonical master library. Replaces the game list (keeps the
+  // Pilot profile), enriching each entry with a fresh id + cover/year from the
+  // built-in art DB. The save effect syncs it to the cloud.
+  const importMaster = () => {
+    setGames(MASTER_GAMES.map(g => {
+      const db = matchGameDb(g.name);
+      return { ...g, id: uid(), cover: db?.cover, year: db?.year };
+    }));
+    setPhase("app");
+  };
+
   const acceptMigration = () => {
     const local = migrateOffer;
     setMigrateOffer(null);
@@ -4904,9 +5154,9 @@ export default function App() {
           <StatusBar profile={profile} games={games} />
           <div style={{ minHeight: "calc(100vh - 130px)" }}>
             {tab === "lib" && <LibraryTab games={games} onClick={setSelected} onToggle={quickToggle} />}
-            {tab === "queue" && <QueueTab games={games} onClick={setSelected} onToggle={quickToggle} onReorder={reorderQueue} />}
+            {tab === "queue" && <QueueTab games={games} onClick={setSelected} onToggle={quickToggle} onReorder={reorderQueue} onCloseModal={() => setSelected(null)} />}
             {tab === "stats" && <StatsTab games={games} />}
-            {tab === "profile" && <ProfileTab profile={profile} games={games} onReset={resetAll} onUpdateProfile={updateProfile} onLogout={logout} email={session?.user?.email} />}
+            {tab === "profile" && <ProfileTab profile={profile} games={games} onReset={resetAll} onUpdateProfile={updateProfile} onLogout={logout} email={session?.user?.email} onImportMaster={importMaster} />}
           </div>
           <TabBar tab={tab} setTab={setTab} onAdd={() => setShowAdd(true)} />
           {selected && <GameModal game={selected} onClose={() => setSelected(null)} onUpdate={updateGame} onDelete={deleteGame} />}
