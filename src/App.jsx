@@ -3196,7 +3196,7 @@ function GameModal({ game, onClose, onUpdate, onDelete }) {
             <>
               <ModalField label="Genre" value={draft.genre} onChange={e => setDraft({ ...draft, genre: e.target.value })} opts={GENRES} />
               <ModalField label="Console" value={draft.console} onChange={e => setDraft({ ...draft, console: e.target.value })} opts={consoleOpts} />
-              <ModalField label={draft.completed ? "Completion Date / Year" : "Year Released or Started"} value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} />
+              <ModalField label={draft.completed ? "Completion Date / Year" : "Year Started"} value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} />
               <ModalField label="Franchise" value={draft.franchise} onChange={e => setDraft({ ...draft, franchise: e.target.value })} />
               <ModalField label="Notes" value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} multiline />
             </>
@@ -3204,7 +3204,7 @@ function GameModal({ game, onClose, onUpdate, onDelete }) {
             <>
               <ReadField label="Genre" k="genre" />
               <ReadField label="Console" k="console" />
-              <ReadField label={draft.completed ? "Completion Date / Year" : "Year Released or Started"} k="date" />
+              <ReadField label={draft.completed ? "Completion Date / Year" : "Year Started"} k="date" />
               <ReadField label="Franchise" k="franchise" />
               <ReadField label="Notes" k="notes" />
             </>
@@ -3268,7 +3268,9 @@ function AddModal({ onClose, onAdd, existingGames = [] }) {
     const platforms = getAvailablePlatforms(match.name);
     let autoConsole = "";
     if (platforms && platforms.length === 1) autoConsole = platforms[0];
-    setG({ ...g, name: match.name, franchise: match.franchise, genre: match.genre, console: autoConsole });
+    // Carry the catalog release year onto the entry as read-only metadata.
+    // Separate from `date` (year started/beaten). IGDB will later backfill this.
+    setG({ ...g, name: match.name, franchise: match.franchise, genre: match.genre, year: match.year, console: autoConsole });
     setSearchVal(match.name);
   };
   const submit = () => { if (!g.name.trim()) return; onAdd({ ...g, id: uid() }); onClose(); };
@@ -3288,10 +3290,10 @@ function AddModal({ onClose, onAdd, existingGames = [] }) {
   }, [filteredConsoles, g.console]);
 
   // Date label depends on whether marked beaten
-  const dateLabel = g.completed ? "Completion Date / Year" : "Year Released or Started";
+  const dateLabel = g.completed ? "Completion Date / Year" : "Year Started";
   const dateHelp = g.completed
     ? "When did you beat this? (e.g. 2025, Childhood, March 2024)"
-    : "When was it released, or when did you start playing?";
+    : "When did you start playing? (optional)";
 
   // BROWSE mode — adds a game from GAME_DB straight into library with sensible defaults.
   // Beaten status is left as backlog (matches the rest of the app's add-defaults).
@@ -3303,6 +3305,7 @@ function AddModal({ onClose, onAdd, existingGames = [] }) {
       name: dbGame.name,
       franchise: dbGame.franchise,
       genre: dbGame.genre,
+      year: dbGame.year, // release year from catalog (read-only metadata)
       console: auto,
       date: "",
       completed: false,
