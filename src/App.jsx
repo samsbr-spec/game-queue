@@ -2201,7 +2201,8 @@ function LazyGameBox({ game, size = 220, selected = false }) {
    PRIMITIVES
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function Panel({ children, glow, pulse, style = {}, onClick }) {
+const PANEL_BG = "linear-gradient(180deg, rgba(12,12,18,0.92) 0%, rgba(5,5,8,0.92) 100%)";
+function Panel({ children, glow, pulse, beam, beamColor, hollow, style = {}, onClick }) {
   const [t, setT] = useState(0);
   useEffect(() => {
     if (!pulse) return;
@@ -2213,13 +2214,43 @@ function Panel({ children, glow, pulse, style = {}, onClick }) {
   const pulseAmt = pulse ? 0.7 + Math.sin(t / 600) * 0.3 : 1;
   const glowStrength = glow ? Math.floor(48 * pulseAmt) : 0;
   const glowAlpha = glow ? Math.floor(80 * pulseAmt).toString(16).padStart(2, '0') : '00';
+
+  // Beam mode: a light travels around the border. A thin outer wrapper holds a
+  // rotating conic gradient (the border ring); an inner box with the real panel
+  // fill covers the center. Margins go on the wrapper, everything else (padding,
+  // etc.) on the inner content box.
+  if (beam) {
+    const bc = beamColor || glow || PAL.cyan;
+    const { margin, marginTop, marginBottom, marginLeft, marginRight, ...contentStyle } = style;
+    return (
+      <div onClick={onClick} style={{
+        position: "relative", borderRadius: "3px", padding: "1.5px", overflow: "hidden",
+        background: `${bc}26`,
+        boxShadow: glow ? `0 0 ${glowStrength}px ${glow}${glowAlpha}, 0 0 ${glowStrength * 2}px ${glow}33` : `0 0 14px ${bc}33`,
+        cursor: onClick ? "pointer" : "default",
+        margin, marginTop, marginBottom, marginLeft, marginRight,
+      }}>
+        <div style={{
+          position: "absolute", top: "50%", left: "50%", width: "230%", height: "230%",
+          transform: "translate(-50%, -50%)",
+          background: `conic-gradient(from 0deg, transparent 0deg, ${bc} 40deg, transparent 110deg)`,
+          animation: "beam-rotate 4.5s linear infinite", pointerEvents: "none",
+        }} />
+        <div style={{
+          position: "relative", borderRadius: "2px", background: PANEL_BG,
+          backdropFilter: "blur(8px)", height: "100%", boxSizing: "border-box", ...contentStyle,
+        }}>{children}</div>
+      </div>
+    );
+  }
+
   return (
     <div onClick={onClick} style={{
-      background: "linear-gradient(180deg, rgba(12,12,18,0.92) 0%, rgba(5,5,8,0.92) 100%)",
-      border: `1px solid ${glow || PAL.line}`,
+      background: hollow ? "transparent" : PANEL_BG,
+      border: hollow ? "none" : `1px solid ${glow || PAL.line}`,
       borderRadius: "2px",
-      boxShadow: glow ? `0 0 ${glowStrength}px ${glow}${glowAlpha}, 0 0 ${glowStrength * 2}px ${glow}33, inset 0 1px 0 rgba(255,255,255,0.05)` : `inset 0 1px 0 rgba(255,255,255,0.04)`,
-      backdropFilter: "blur(8px)", cursor: onClick ? "pointer" : "default",
+      boxShadow: glow ? `0 0 ${glowStrength}px ${glow}${glowAlpha}, 0 0 ${glowStrength * 2}px ${glow}33, inset 0 1px 0 rgba(255,255,255,0.05)` : (hollow ? "none" : `inset 0 1px 0 rgba(255,255,255,0.04)`),
+      backdropFilter: hollow ? "none" : "blur(8px)", cursor: onClick ? "pointer" : "default",
       position: "relative", transition: "border-color 0.2s", ...style,
     }}>{children}</div>
   );
@@ -2322,7 +2353,9 @@ function Chip({ children, color = PAL.inkDim, active, onClick }) {
 }
 
 function Label({ children, color = PAL.inkDim }) {
-  return <div style={{ fontFamily: FONT_DISPLAY, fontSize: "10px", fontWeight: 500, color, letterSpacing: "3px", textTransform: "uppercase", marginBottom: "12px" }}>{children}</div>;
+  // Accent-colored labels glow softly; plain (inkDim) ones stay flat.
+  const textShadow = color !== PAL.inkDim ? `0 0 10px ${color}88, 0 0 20px ${color}44` : "none";
+  return <div style={{ fontFamily: FONT_DISPLAY, fontSize: "10px", fontWeight: 500, color, letterSpacing: "3px", textTransform: "uppercase", marginBottom: "12px", textShadow }}>{children}</div>;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -3592,12 +3625,19 @@ function GameCard({ game, onClick, onDoubleClick, onToggle, size = "md", queueNu
       padding: isXs ? "2px" : isSm ? "4px" : "8px", display: "flex", flexDirection: "column", alignItems: "center",
       textAlign: "center", position: "relative",
     }}>
-      {/* Halo behind 3D box when beaten */}
+      {/* Genre-colored glow behind every box so the grid isn't bland against the
+          void — a touch brighter for beaten games (which also earned the halo). */}
+      <div style={{
+        position: "absolute", top: isXs ? "2px" : isSm ? "4px" : "8px", left: "50%", transform: "translateX(-50%)",
+        width: `${haloSize}px`, height: `${haloSize}px`,
+        background: `radial-gradient(circle, ${hue}${game.completed ? "40" : "2b"} 0%, ${hue}${game.completed ? "18" : "10"} 42%, transparent 70%)`,
+        pointerEvents: "none", zIndex: 0,
+      }} />
       {game.completed && (
         <div style={{
           position: "absolute", top: isXs ? "2px" : isSm ? "4px" : "8px", left: "50%", transform: "translateX(-50%)",
           width: `${haloSize}px`, height: `${haloSize}px`,
-          background: `radial-gradient(circle, ${hue}33 0%, ${hue}11 40%, transparent 70%)`,
+          background: `radial-gradient(circle, ${hue}22 0%, transparent 65%)`,
           pointerEvents: "none", zIndex: 0,
         }} />
       )}
@@ -3969,7 +4009,7 @@ function LibraryTab({ games, onClick, onToggle }) {
    Works with touch and mouse via Pointer Events.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12, onItemTap, onItemDoubleTap }) {
+function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12, template, onItemTap, onItemDoubleTap }) {
   const containerRef = useRef(null);
   const itemRefs = useRef([]);
   const [dragState, setDragState] = useState(null); // { id, fromIdx, x, y, offsetX, offsetY, hoverIdx }
@@ -4126,7 +4166,7 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12, onItemTap
         ref={containerRef}
         style={{
           display: "grid",
-          gridTemplateColumns: `repeat(${cols}, 1fr)`,
+          gridTemplateColumns: template || `repeat(${cols}, 1fr)`,
           gap: `${gap}px`,
           touchAction: dragState ? "none" : "auto",
         }}
@@ -4193,6 +4233,21 @@ function DraggableGrid({ items, onReorder, renderItem, cols, gap = 12, onItemTap
   );
 }
 
+// A glowing section divider: a faint base line with a bright band of light that
+// travels across and loops (regenerating at the left), colored to match the group.
+function NeonDivider({ color }) {
+  return (
+    <div style={{ flex: 1, position: "relative", overflow: "hidden", height: "2px", borderRadius: "1px", background: `${color}22`, boxShadow: `0 0 6px ${color}44` }}>
+      <div style={{
+        position: "absolute", top: 0, bottom: 0, width: "30%",
+        background: `linear-gradient(90deg, transparent, ${color}, transparent)`,
+        boxShadow: `0 0 8px ${color}, 0 0 16px ${color}`,
+        animation: "neon-travel 2.6s linear infinite",
+      }} />
+    </div>
+  );
+}
+
 function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
   const [genre, setGenre] = useState("ALL");
   const [console_, setConsole_] = useState("ALL");
@@ -4256,12 +4311,39 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
     onReorder(order.map((x, i) => ({ ...x, queueOrder: i * 10 })));
   }, [masterOrdered, onReorder]);
 
+  // Reorder a visible subset (a filter result or one genre/console group) and
+  // fold it back into the master queue: the subset's games are permuted among
+  // the exact slots they already occupy in the master order, and every game not
+  // in the subset stays put. Then re-index the whole queue.
+  const applySubsetReorder = useCallback((newSubset) => {
+    const ids = new Set(newSubset.map(g => g.id));
+    let k = 0;
+    const full = masterOrdered.map(g => (ids.has(g.id) ? newSubset[k++] : g));
+    onReorder(full.map((g, i) => ({ ...g, queueOrder: i * 10 })));
+  }, [masterOrdered, onReorder]);
+
   // Tap opens the game; double-tap moves it to the front. Detection lives in
   // DraggableGrid's pointer handlers (native click/dblclick are unreliable under
   // pointer capture). onCloseModal is a safety net in case a tap already opened
   // the modal before a double-tap landed.
   const openGame = useCallback((g) => onClick(g), [onClick]);
   const jumpToFront = useCallback((g) => { onCloseModal?.(); moveToFront(g); }, [moveToFront, onCloseModal]);
+
+  // "Pick a game for me." Candidate pool, derived purely from the live queue
+  // ranking: the #1 game of every genre, PLUS the #2 game of the genre that owns
+  // the overall #1 game — giving that genre double weight. Then pick uniformly.
+  const [picked, setPicked] = useState(null);
+  const pickForMe = useCallback(() => {
+    const q = masterOrdered;
+    if (!q.length) return;
+    const firstByGenre = {};
+    q.forEach(g => { const gen = g.genre || "Other"; if (!(gen in firstByGenre)) firstByGenre[gen] = g; });
+    const pool = Object.values(firstByGenre);
+    const topGenre = q[0].genre || "Other";
+    const sameGenre = q.filter(g => (g.genre || "Other") === topGenre);
+    if (sameGenre[1]) pool.push(sameGenre[1]); // second of the top overall genre
+    setPicked(pool[Math.floor(Math.random() * pool.length)]);
+  }, [masterOrdered]);
 
   // Group while preserving master order — groups themselves are ordered by
   // the master-order position of the first game in each group, so the genre
@@ -4398,9 +4480,10 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
         </div>
       )}
 
-      {/* Entry count */}
+      {/* Entry count + "pick a game" */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
         <div style={{ fontFamily: FONT_MONO, fontSize: "11px", color: PAL.inkFaint, letterSpacing: "2px" }}>◇ {filtered.length} ENTRIES</div>
+        {masterOrdered.length > 0 && <Btn onClick={pickForMe} color={PAL.emerald} size="sm" glow>◇ PICK FOR ME</Btn>}
       </div>
 
       {filtered.length === 0 ? (
@@ -4425,12 +4508,7 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
             gap={12}
             onItemTap={openGame}
             onItemDoubleTap={jumpToFront}
-            onReorder={(newOrder) => {
-              // Persist new positions via queueOrder field on each game.
-              // Use indexed values so future items can be inserted between.
-              const updates = newOrder.map((g, i) => ({ ...g, queueOrder: i * 10 }));
-              onReorder(updates);
-            }}
+            onReorder={applySubsetReorder}
             renderItem={(g, idx) => (
               <GameCard game={g} size={cardSize} queueNumber={idx + 1} onToggle={p => onToggle(g.id, p)} />
             )}
@@ -4442,12 +4520,18 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
           <div key={gname} style={{ marginBottom: "28px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
               <div style={{ fontFamily: FONT_DISPLAY, fontSize: "11px", color: hueOf(gname), letterSpacing: "3px", fontWeight: 600, textShadow: `0 0 10px ${hueOf(gname)}66` }}>{gname.toUpperCase()}</div>
-              <div style={{ flex: 1, height: "1px", background: hueOf(gname), opacity: 0.3 }} />
+              <NeonDivider color={hueOf(gname)} />
               <div style={{ fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint }}>{list.length}</div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "12px" }}>
-              {list.map(g => <GameCard key={g.id} game={g} onClick={() => openGame(g)} onToggle={p => onToggle(g.id, p)} />)}
-            </div>
+            <DraggableGrid
+              items={list}
+              template="repeat(auto-fill, minmax(140px, 1fr))"
+              gap={12}
+              onReorder={applySubsetReorder}
+              onItemTap={openGame}
+              onItemDoubleTap={jumpToFront}
+              renderItem={(g) => <GameCard game={g} onToggle={p => onToggle(g.id, p)} />}
+            />
           </div>
         ))
       ) : (
@@ -4460,15 +4544,45 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
             <div key={cid} style={{ marginBottom: "28px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
                 <div style={{ fontFamily: FONT_DISPLAY, fontSize: "11px", color: accent, letterSpacing: "3px", fontWeight: 600, textShadow: `0 0 10px ${accent}66` }}>{label.toUpperCase()}</div>
-                <div style={{ flex: 1, height: "1px", background: accent, opacity: 0.3 }} />
+                <NeonDivider color={accent} />
                 <div style={{ fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint }}>{list.length}</div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "12px" }}>
-                {list.map(g => <GameCard key={g.id} game={g} onClick={() => openGame(g)} onToggle={p => onToggle(g.id, p)} />)}
-              </div>
+              <DraggableGrid
+                items={list}
+                template="repeat(auto-fill, minmax(140px, 1fr))"
+                gap={12}
+                onReorder={applySubsetReorder}
+                onItemTap={openGame}
+                onItemDoubleTap={jumpToFront}
+                renderItem={(g) => <GameCard game={g} onToggle={p => onToggle(g.id, p)} />}
+              />
             </div>
           );
         })
+      )}
+
+      {picked && (
+        <div onClick={() => setPicked(null)} style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.82)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: "360px" }}>
+            <Panel glow={hueOf(picked.genre)} pulse style={{ padding: "24px", textAlign: "center" }}>
+              <Label color={hueOf(picked.genre)}>◇ Play This Next</Label>
+              <div style={{ display: "flex", justifyContent: "center", margin: "12px 0 16px" }}>
+                <LazyGameBox game={picked} size={150} selected />
+              </div>
+              <div style={{ fontFamily: FONT_DISPLAY, fontSize: "9px", color: hueOf(picked.genre), letterSpacing: "2px", fontWeight: 600, marginBottom: "4px", textShadow: `0 0 8px ${hueOf(picked.genre)}88` }}>{(picked.franchise || "—").toUpperCase()}</div>
+              <div style={{ fontFamily: FONT_DISPLAY, fontSize: "18px", color: PAL.ink, fontWeight: 600, lineHeight: 1.2, marginBottom: "10px" }}>{picked.name}</div>
+              <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap", marginBottom: "18px" }}>
+                <Chip color={hueOf(picked.genre)} active>{picked.genre || "Other"}</Chip>
+                {consoleOf(picked.console) && <Chip color={brandColorOf(picked.console)} active>{consoleOf(picked.console).label}</Chip>}
+              </div>
+              <div style={{ display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap" }}>
+                <Btn onClick={pickForMe} color={PAL.violet} size="sm">↻ REROLL</Btn>
+                <Btn onClick={() => { onClick(picked); setPicked(null); }} color={PAL.emerald} size="sm">OPEN ▷</Btn>
+                <Btn onClick={() => setPicked(null)} color={PAL.inkDim} size="sm">CLOSE</Btn>
+              </div>
+            </Panel>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -4580,7 +4694,7 @@ function StatsTab({ games }) {
         ))}
       </div>
       {byGenre.length > 0 && (
-        <Panel style={{ padding: "20px", marginBottom: "16px" }}>
+        <Panel beam beamColor={PAL.cyan} style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Genre Distribution</Label>
           <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "14px" }}>
             {byGenre.map(([g, c]) => {
@@ -4596,7 +4710,10 @@ function StatsTab({ games }) {
                       <span style={{ fontFamily: FONT_MONO, fontSize: "11px", color: PAL.inkDim }}>{c}</span>
                     </div>
                     <div style={{ height: "4px", background: PAL.bg, position: "relative", borderRadius: "2px", overflow: "hidden" }}>
-                      <div style={{ position: "absolute", inset: 0, width: `${(c/maxG)*100}%`, background: hueOf(g), boxShadow: `0 0 16px ${hueOf(g)}` }} />
+                      <div style={{ position: "absolute", inset: 0, width: `${(c/maxG)*100}%`, background: hueOf(g), boxShadow: `0 0 16px ${hueOf(g)}`, borderRadius: "2px", overflow: "hidden" }}>
+                        {/* traveling shimmer along the bar */}
+                        <div style={{ position: "absolute", top: 0, bottom: 0, width: "45%", background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.85), transparent)", animation: "neon-travel 2.6s linear infinite" }} />
+                      </div>
                     </div>
                   </div>
                   {open && <StatGameList games={gamesByGenre[g] || []} accent={hueOf(g)} />}
@@ -4607,7 +4724,7 @@ function StatsTab({ games }) {
         </Panel>
       )}
       {byConsole.length > 0 && (
-        <Panel style={{ padding: "20px", marginBottom: "16px" }}>
+        <Panel beam beamColor={PAL.emerald} style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Hardware Stats</Label>
           <div style={{ marginTop: "12px" }}>
             {byConsole.map(([cid, c]) => {
@@ -4627,7 +4744,7 @@ function StatsTab({ games }) {
         </Panel>
       )}
       {byYear.length > 0 && (
-        <Panel style={{ padding: "20px", marginBottom: "16px" }}>
+        <Panel beam beamColor={PAL.emerald} style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Timeline</Label>
           <div style={{ marginTop: "12px" }}>
             {byYear.map(([y, c]) => {
@@ -4645,7 +4762,7 @@ function StatsTab({ games }) {
         </Panel>
       )}
       {byFranchise.length > 0 && (
-        <Panel style={{ padding: "20px", marginBottom: "16px" }}>
+        <Panel beam beamColor={PAL.amber} style={{ padding: "20px", marginBottom: "16px" }}>
           <Label>◇ Top Franchises</Label>
           <div style={{ marginTop: "12px" }}>
             {byFranchise.map(([f, c], i) => {
@@ -4662,7 +4779,7 @@ function StatsTab({ games }) {
           </div>
         </Panel>
       )}
-      <Panel style={{ padding: "20px" }}>
+      <Panel beam beamColor={PAL.amber} style={{ padding: "20px" }}>
         <Label>◇ Achievements ({earned.length}/{ACHIEVEMENTS.length})</Label>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: "10px", marginTop: "14px" }}>
           {ACHIEVEMENTS.map(a => {
@@ -4685,6 +4802,7 @@ function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email,
   const [importConfirm, setImportConfirm] = useState(false); // master-library restore confirm
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(profile.name || "");
+  const [editingHardware, setEditingHardware] = useState(false);
 
   const saveName = () => {
     const next = nameDraft.trim() || "PLAYER 1";
@@ -4692,10 +4810,22 @@ function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email,
     setEditingName(false);
   };
 
+  const consoles = profile.consoles || [];
+  const toggleConsole = (id) => {
+    onUpdateProfile({ consoles: consoles.includes(id) ? consoles.filter(x => x !== id) : [...consoles, id] });
+  };
+  // Consoles that show up in the library but aren't linked yet — offered as a
+  // one-tap "add all" so hardware you actually play on isn't missing.
+  const usedConsoles = useMemo(() => {
+    const s = new Set();
+    games.forEach(g => { if (g.console) s.add(g.console); if (g.launchConsole) s.add(g.launchConsole); });
+    return [...s].filter(id => !consoles.includes(id) && consoleOf(id));
+  }, [games, consoles]);
+
   return (
     <div style={{ padding: "20px" }}>
-      <Panel glow={PAL.cyan} pulse style={{ padding: "24px", marginBottom: "16px" }}>
-        <Label color={PAL.cyan}>◇ Pilot</Label>
+      <Panel beam glow={PAL.cyan} pulse style={{ padding: "24px", marginBottom: "16px" }}>
+        <Label color={PAL.cyan}>◇ Username</Label>
         {editingName ? (
           <div style={{ display: "flex", gap: "8px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
             <input
@@ -4730,32 +4860,65 @@ function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email,
         {profile.createdAt && (<div style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.inkFaint, letterSpacing: "1px" }}>◇ ACTIVE SINCE {new Date(profile.createdAt).toLocaleDateString()}</div>)}
       </Panel>
       {profile.genres?.length > 0 && (
-        <Panel style={{ padding: "20px", marginBottom: "16px" }}>
-          <Label>◇ Preferred Genres</Label>
+        <Panel hollow style={{ padding: "20px", marginBottom: "16px", background: `radial-gradient(ellipse at 50% 32%, ${PAL.violet}26 0%, ${PAL.violet}0d 42%, transparent 72%)` }}>
+          <Label color={PAL.violet}>◇ Preferred Genres</Label>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" }}>
             {profile.genres.map(g => <Chip key={g} color={hueOf(g)} active>{g}</Chip>)}
           </div>
         </Panel>
       )}
-      {profile.consoles?.length > 0 && (
-        <Panel style={{ padding: "20px", marginBottom: "16px" }}>
-          <Label>◇ Linked Hardware</Label>
+      <Panel hollow style={{ padding: "20px", marginBottom: "16px", background: `radial-gradient(ellipse at 50% 26%, ${PAL.emerald}22 0%, ${PAL.emerald}0b 44%, transparent 72%)` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+          <Label color={PAL.emerald}>◇ Linked Hardware</Label>
+          <button onClick={() => setEditingHardware(v => !v)} style={{
+            background: editingHardware ? `${PAL.cyan}18` : "transparent", border: `1px solid ${editingHardware ? PAL.cyan : PAL.line}`,
+            color: editingHardware ? PAL.cyan : PAL.inkDim, cursor: "pointer",
+            fontFamily: FONT_DISPLAY, fontSize: "10px", letterSpacing: "2px", padding: "5px 10px", fontWeight: 500,
+          }}>{editingHardware ? "✓ DONE" : "✎ EDIT"}</button>
+        </div>
+
+        {editingHardware ? (
+          <div style={{ marginTop: "12px" }}>
+            {usedConsoles.length > 0 && (
+              <div style={{ marginBottom: "12px" }}>
+                <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: PAL.inkDim, marginBottom: "8px", fontWeight: 300 }}>Detected in your library but not linked:</div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                  {usedConsoles.map(id => <Chip key={id} color={brandColorOf(id)} onClick={() => toggleConsole(id)}>+ {consoleOf(id).label}</Chip>)}
+                  <Btn onClick={() => onUpdateProfile({ consoles: [...consoles, ...usedConsoles] })} color={PAL.emerald} size="sm">ADD ALL</Btn>
+                </div>
+              </div>
+            )}
+            <BrandPicker selected={consoles} onToggle={toggleConsole} />
+          </div>
+        ) : consoles.length > 0 ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "12px", marginTop: "10px" }}>
-            {profile.consoles.map(id => {
+            {consoles.map(id => {
               const c = consoleOf(id);
               if (!c) return null;
               const bc = brandColorOf(id);
               return (
-                <Panel key={id} glow={bc} style={{ padding: "12px", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
-                  <ConsoleModel modelId={c.model} color={c.accentColor} selected={false} size={110} />
-                  <div style={{ fontFamily: FONT_DISPLAY, fontSize: "9px", color: bc, letterSpacing: "2px", marginTop: "6px", fontWeight: 600, textShadow: `0 0 8px ${bc}66` }}>{c.label}</div>
-                </Panel>
+                <div key={id} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "14px 8px" }}>
+                  {/* pulsing colored glow behind the model — replaces the boxed panel */}
+                  <div style={{
+                    position: "absolute", top: "10px", left: "50%", transform: "translateX(-50%)",
+                    width: "120px", height: "120px",
+                    background: `radial-gradient(circle, ${bc}66 0%, ${bc}22 38%, transparent 70%)`,
+                    filter: "blur(3px)", pointerEvents: "none", zIndex: 0,
+                    animation: "console-glow-pulse 3s ease-in-out infinite",
+                  }} />
+                  <div style={{ position: "relative", zIndex: 1 }}>
+                    <ConsoleModel modelId={c.model} color={c.accentColor} selected={false} size={110} />
+                  </div>
+                  <div style={{ position: "relative", zIndex: 1, fontFamily: FONT_DISPLAY, fontSize: "9px", color: bc, letterSpacing: "2px", marginTop: "6px", fontWeight: 600, textShadow: `0 0 8px ${bc}88` }}>{c.label}</div>
+                </div>
               );
             })}
           </div>
-        </Panel>
-      )}
-      <Panel style={{ padding: "20px", marginBottom: "16px" }}>
+        ) : (
+          <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, marginTop: "10px", fontWeight: 300 }}>No hardware linked yet — tap ✎ EDIT to add your consoles.</div>
+        )}
+      </Panel>
+      <Panel hollow style={{ padding: "20px", marginBottom: "16px", background: `radial-gradient(ellipse at 50% 32%, ${PAL.cyan}22 0%, ${PAL.cyan}0c 44%, transparent 72%)` }}>
         <Label color={PAL.cyan}>◇ Session</Label>
         {email && (
           <div style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.inkDim, letterSpacing: "1px", marginBottom: "14px", wordBreak: "break-all" }}>
@@ -4802,7 +4965,7 @@ function TabBar({ tab, setTab, onAdd }) {
     { id: "queue", l: "QUEUE", c: PAL.violet },
     { id: "lib", l: "LIBRARY", c: PAL.cyan },
     { id: "stats", l: "STATS", c: PAL.emerald },
-    { id: "profile", l: "PILOT", c: PAL.magenta },
+    { id: "profile", l: "PROFILE", c: PAL.magenta },
   ];
   return (
     <div style={{ position: "sticky", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(12px)", borderTop: `1px solid ${PAL.cyan}33`, display: "flex", padding: "10px", gap: "8px", zIndex: 50 }}>
@@ -5038,6 +5201,9 @@ export default function App() {
       .hide-scrollbar::-webkit-scrollbar { display: none; }
       .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
       @keyframes queue-rank-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+      @keyframes neon-travel { 0% { left: -30%; } 100% { left: 100%; } }
+      @keyframes beam-rotate { to { transform: translate(-50%, -50%) rotate(360deg); } }
+      @keyframes console-glow-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
       @keyframes queue-rank-pulse {
         0%,100% { text-shadow: 0 0 5px #4fdfff88, 0 0 10px #4fdfff33; opacity: 0.9; }
         50%     { text-shadow: 0 0 11px #4fdfffff, 0 0 22px #4fdfff88; opacity: 1; }
