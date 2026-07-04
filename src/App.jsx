@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import * as THREE from "three";
+import { supabase } from "./supabaseClient";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    GAME QUEUE — v4 / DEEP SPACE
@@ -510,15 +511,19 @@ const FONT_TITLE = "'Audiowide', sans-serif";    // chunky rounded retro for the
 const FONT_TAGLINE = "'Michroma', sans-serif";   // thin spaced geometric for the tagline
 
 const STORAGE_KEY = "gamevault:v4";
-// Persistence layer. Prefers the artifact `window.storage` API when present
-// (so this same file still works inside Claude), and falls back to the
-// browser's localStorage everywhere else (Vercel, normal web hosting, etc).
-async function loadState() {
+const CLOUD_TABLE = "game_data";
+
+// ─── PERSISTENCE ─────────────────────────────────────────────────────────────
+// Data now lives in Supabase (Postgres) so a user's queue syncs across every
+// device they sign in on. Each user owns exactly one row in `public.game_data`
+// keyed by their auth uid; the `data` jsonb column holds the same
+// { profile, games } shape the app has always used. Row Level Security keeps
+// each row private to its owner.
+
+// Read the legacy localStorage save, if any. Only used to offer a one-time
+// migration of pre-cloud data into a user's fresh account.
+function loadLocalState() {
   try {
-    if (typeof window !== "undefined" && window.storage) {
-      const r = await window.storage.get(STORAGE_KEY);
-      return r ? JSON.parse(r.value) : null;
-    }
     if (typeof localStorage !== "undefined") {
       const raw = localStorage.getItem(STORAGE_KEY);
       return raw ? JSON.parse(raw) : null;
@@ -526,27 +531,43 @@ async function loadState() {
   } catch {}
   return null;
 }
-async function saveState(s) {
+
+// Load the signed-in user's { profile, games } blob from the cloud.
+// Returns null when the row doesn't exist yet (brand-new account) or on error.
+async function loadCloud(userId) {
   try {
-    if (typeof window !== "undefined" && window.storage) {
-      await window.storage.set(STORAGE_KEY, JSON.stringify(s));
-      return;
-    }
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-    }
-  } catch {}
+    const { data, error } = await supabase
+      .from(CLOUD_TABLE)
+      .select("data")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) { console.error("[supabase] load failed:", error.message); return null; }
+    return data?.data ?? null;
+  } catch (e) {
+    console.error("[supabase] load threw:", e);
+    return null;
+  }
 }
-async function clearState() {
+
+// Upsert the user's blob. onConflict=user_id means repeated saves update the
+// same row rather than erroring on the primary key.
+async function saveCloud(userId, state) {
   try {
-    if (typeof window !== "undefined" && window.storage) {
-      await window.storage.delete(STORAGE_KEY);
-      return;
-    }
-    if (typeof localStorage !== "undefined") {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {}
+    const { error } = await supabase
+      .from(CLOUD_TABLE)
+      .upsert(
+        { user_id: userId, data: state, updated_at: new Date().toISOString() },
+        { onConflict: "user_id" }
+      );
+    if (error) console.error("[supabase] save failed:", error.message);
+  } catch (e) {
+    console.error("[supabase] save threw:", e);
+  }
+}
+
+// "Reset all data" — empties the user's row but keeps them signed in.
+async function clearCloud(userId) {
+  await saveCloud(userId, {});
 }
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -4393,7 +4414,7 @@ function StatsTab({ games }) {
   );
 }
 
-function ProfileTab({ profile, games, onReset, onUpdateProfile }) {
+function ProfileTab({ profile, games, onReset, onUpdateProfile, onLogout, email }) {
   const [confirm, setConfirm] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(profile.name || "");
@@ -4467,6 +4488,16 @@ function ProfileTab({ profile, games, onReset, onUpdateProfile }) {
           </div>
         </Panel>
       )}
+      <Panel style={{ padding: "20px", marginBottom: "16px" }}>
+        <Label color={PAL.cyan}>◇ Session</Label>
+        {email && (
+          <div style={{ fontFamily: FONT_MONO, fontSize: "12px", color: PAL.inkDim, letterSpacing: "1px", marginBottom: "14px", wordBreak: "break-all" }}>
+            ◇ SIGNED IN AS {email.toUpperCase()}
+          </div>
+        )}
+        <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, marginBottom: "14px", fontWeight: 300 }}>Sign out on this device. Your queue stays safe in the cloud.</div>
+        <Btn onClick={onLogout} color={PAL.cyan} size="sm">SIGN OUT</Btn>
+      </Panel>
       <Panel glow={PAL.danger} style={{ padding: "20px" }}>
         <Label color={PAL.danger}>◇ Self-Destruct</Label>
         <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, marginBottom: "14px", marginTop: "8px", fontWeight: 300 }}>Wipes all data. Cannot be undone.</div>
@@ -4479,7 +4510,7 @@ function ProfileTab({ profile, games, onReset, onUpdateProfile }) {
           <Btn onClick={() => setConfirm(true)} color={PAL.danger} size="sm">RESET ALL DATA</Btn>
         )}
       </Panel>
-      <div style={{ marginTop: "24px", textAlign: "center", fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint, letterSpacing: "3px" }}>◇ AUTO-SAVE ACTIVE ◇ DATA PERSISTED</div>
+      <div style={{ marginTop: "24px", textAlign: "center", fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint, letterSpacing: "3px" }}>◇ CLOUD SYNC ACTIVE ◇ DATA PERSISTED</div>
     </div>
   );
 }
@@ -4534,7 +4565,178 @@ function StatusBar({ profile, games }) {
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   AUTH — email/password gate (Supabase)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Turn Supabase's terse error strings into on-brand, human messages.
+function friendlyAuthError(msg) {
+  const m = (msg || "").toLowerCase();
+  if (m.includes("invalid login")) return "Wrong email or password.";
+  if (m.includes("already registered") || m.includes("already been registered"))
+    return "That email is already registered — try signing in instead.";
+  if (m.includes("email not confirmed")) return "Confirm your email first — check your inbox.";
+  if (m.includes("password should be at least")) return "Password must be at least 6 characters.";
+  if (m.includes("unable to validate email") || m.includes("invalid email") || m.includes("invalid format"))
+    return "That doesn't look like a valid email address.";
+  if (m.includes("rate limit") || m.includes("too many") || m.includes("for security purposes"))
+    return "Too many attempts — wait a moment and try again.";
+  if (m.includes("signups not allowed")) return "New sign-ups are disabled for this project.";
+  return msg || "Something went wrong. Please try again.";
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState("signin"); // "signin" | "signup"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const isSignup = mode === "signup";
+
+  async function submit() {
+    if (loading) return;
+    setError(""); setNotice("");
+    if (!email.trim() || !password) { setError("Enter your email and password."); return; }
+    setLoading(true);
+    try {
+      if (isSignup) {
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
+        if (error) {
+          setError(friendlyAuthError(error.message));
+        } else if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+          // Supabase returns an obfuscated user with no identities when the
+          // email already exists (to avoid leaking which emails are registered).
+          setError("That email is already registered — try signing in instead.");
+        } else if (!data.session) {
+          // Email confirmation is enabled on the project — no session yet.
+          setNotice("Account created. Check your email to confirm, then sign in.");
+          setMode("signin");
+        }
+        // If a session came back, onAuthStateChange swaps this screen out.
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) setError(friendlyAuthError(error.message));
+      }
+    } catch (e) {
+      setError(friendlyAuthError(e?.message));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const inputStyle = {
+    width: "100%", boxSizing: "border-box",
+    background: PAL.bg, color: PAL.ink,
+    border: `1px solid ${PAL.line}`,
+    fontFamily: FONT_BODY, fontSize: "16px", fontWeight: 400,
+    letterSpacing: "1px", padding: "12px 14px", outline: "none",
+    marginBottom: "14px", transition: "border-color 0.2s, box-shadow 0.2s",
+  };
+  const focusOn = e => { e.target.style.borderColor = PAL.cyan; e.target.style.boxShadow = `0 0 16px ${PAL.cyan}33`; };
+  const focusOff = e => { e.target.style.borderColor = PAL.line; e.target.style.boxShadow = "none"; };
+  const onKey = e => { if (e.key === "Enter") submit(); };
+
+  return (
+    <div style={{
+      minHeight: "100vh", color: PAL.ink, fontFamily: FONT_BODY,
+      padding: "32px 20px", display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      position: "relative", zIndex: 1,
+    }}>
+      <div style={{ textAlign: "center", marginBottom: "8px" }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: "10px", color: PAL.cyan, letterSpacing: "8px", marginBottom: "4px", opacity: 0.7 }}>◇ SYSTEM ONLINE ◇</div>
+        <Title3D height={180} />
+      </div>
+
+      <Panel glow={PAL.cyan} pulse style={{ padding: "28px 24px", width: "100%", maxWidth: "380px" }}>
+        <Label color={PAL.cyan}>◇ {isSignup ? "Create Pilot Access" : "Pilot Sign-In"}</Label>
+
+        <input
+          type="email" value={email} autoComplete="email"
+          onChange={e => setEmail(e.target.value)}
+          onFocus={focusOn} onBlur={focusOff} onKeyDown={onKey}
+          placeholder="email@address.com"
+          style={inputStyle}
+        />
+        <input
+          type="password" value={password}
+          autoComplete={isSignup ? "new-password" : "current-password"}
+          onChange={e => setPassword(e.target.value)}
+          onFocus={focusOn} onBlur={focusOff} onKeyDown={onKey}
+          placeholder="password"
+          style={{ ...inputStyle, marginBottom: "18px" }}
+        />
+
+        {error && (
+          <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: PAL.danger, letterSpacing: "0.5px", marginBottom: "14px", textShadow: `0 0 12px ${PAL.danger}66` }}>
+            ✕ {error}
+          </div>
+        )}
+        {notice && (
+          <div style={{ fontFamily: FONT_BODY, fontSize: "13px", color: PAL.emerald, letterSpacing: "0.5px", marginBottom: "14px", textShadow: `0 0 12px ${PAL.emerald}66` }}>
+            ◇ {notice}
+          </div>
+        )}
+
+        <Btn onClick={submit} color={PAL.cyan} full disabled={loading} glow={!loading}>
+          {loading ? "◇ LINKING ◇" : isSignup ? "CREATE ACCOUNT" : "SIGN IN"}
+        </Btn>
+
+        <div style={{ marginTop: "18px", textAlign: "center" }}>
+          <span style={{ fontFamily: FONT_MONO, fontSize: "11px", color: PAL.inkDim, letterSpacing: "1px" }}>
+            {isSignup ? "Already have access?" : "No account yet?"}
+          </span>
+          <button
+            onClick={() => { setMode(isSignup ? "signin" : "signup"); setError(""); setNotice(""); }}
+            style={{
+              background: "transparent", border: "none", cursor: "pointer",
+              fontFamily: FONT_DISPLAY, fontSize: "11px", fontWeight: 600,
+              color: PAL.cyan, letterSpacing: "2px", marginLeft: "8px",
+              textShadow: `0 0 10px ${PAL.cyan}66`,
+            }}
+          >{isSignup ? "SIGN IN" : "SIGN UP"}</button>
+        </div>
+      </Panel>
+
+      <div style={{ marginTop: "24px", fontFamily: FONT_MONO, fontSize: "10px", color: PAL.inkFaint, letterSpacing: "2px" }}>
+        v4.0 // cloud sync active
+      </div>
+    </div>
+  );
+}
+
+// Offered once when a user signs into a fresh cloud account while legacy
+// localStorage data from a pre-cloud session still exists on this device.
+function MigrationModal({ data, onUpload, onSkip }) {
+  const count = data?.games?.length || 0;
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      background: "rgba(0,0,0,0.82)", backdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "20px",
+    }}>
+      <Panel glow={PAL.amber} pulse style={{ padding: "28px 24px", width: "100%", maxWidth: "380px" }}>
+        <Label color={PAL.amber}>◇ Local Save Detected</Label>
+        <div style={{ fontFamily: FONT_BODY, fontSize: "15px", color: PAL.ink, fontWeight: 300, lineHeight: 1.5, marginBottom: "8px" }}>
+          Found {count} game{count === 1 ? "" : "s"} saved on this device from before you had an account.
+        </div>
+        <div style={{ fontFamily: FONT_BODY, fontSize: "14px", color: PAL.inkDim, fontWeight: 300, lineHeight: 1.5, marginBottom: "20px" }}>
+          Upload them to your cloud account so they sync across your devices?
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <Btn onClick={onUpload} color={PAL.emerald} full glow>UPLOAD TO CLOUD</Btn>
+          <Btn onClick={onSkip} color={PAL.inkDim} full size="sm">START FRESH</Btn>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 export default function App() {
+  const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
+  const [migrateOffer, setMigrateOffer] = useState(null);
   const [booted, setBooted] = useState(false);
   const [phase, setPhase] = useState("onboard");
   const [profile, setProfile] = useState({});
@@ -4559,22 +4761,51 @@ export default function App() {
     document.body.style.margin = "0";
   }, []);
 
+  // Track the Supabase auth session. `session === undefined` means we're still
+  // checking; `null` means signed out (show AuthScreen); an object means signed in.
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // Whenever the signed-in user changes, load their cloud queue. On sign-out,
+  // wipe in-memory state so the next account never sees the previous one's data.
+  const userId = session?.user?.id ?? null;
+  useEffect(() => {
+    if (session === undefined) return; // auth still resolving
+    if (!userId) {
+      setBooted(false);
+      setProfile({}); setGames([]); setPhase("onboard");
+      setMigrateOffer(null); setTab("queue");
+      return;
+    }
+    let cancelled = false;
+    setBooted(false);
     (async () => {
-      const saved = await loadState();
-      if (saved && (saved.profile?.name || saved.games?.length)) {
-        setProfile(saved.profile || {});
-        setGames(saved.games || []);
+      const cloud = await loadCloud(userId);
+      if (cancelled) return;
+      if (cloud && (cloud.profile?.name || cloud.games?.length)) {
+        setProfile(cloud.profile || {});
+        setGames(cloud.games || []);
         setPhase("app");
+      } else {
+        // Empty cloud account — offer to import any legacy local save.
+        const local = loadLocalState();
+        if (local && (local.profile?.name || local.games?.length)) setMigrateOffer(local);
+        setProfile({}); setGames([]); setPhase("onboard");
       }
       setBooted(true);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [session, userId]);
 
+  // Persist to the cloud on change. Guarded on `booted` so the initial load
+  // (which briefly holds empty state) can never overwrite the real cloud row.
   useEffect(() => {
-    if (!booted || phase !== "app") return;
-    saveState({ profile, games });
-  }, [profile, games, phase, booted]);
+    if (!booted || phase !== "app" || !userId) return;
+    saveCloud(userId, { profile, games });
+  }, [profile, games, phase, booted, userId]);
 
   const finishOnboard = ({ profile: p, games: g }) => { setProfile(p); setGames(g); setPhase("app"); };
   const importSeed = () => {
@@ -4593,17 +4824,32 @@ export default function App() {
       return u ? { ...g, queueOrder: u.queueOrder } : g;
     }));
   }, []);
-  const resetAll = async () => { await clearState(); setProfile({}); setGames([]); setPhase("onboard"); };
+  // "Reset all data" — empties the cloud row but keeps the user signed in.
+  const resetAll = async () => { if (userId) await clearCloud(userId); setProfile({}); setGames([]); setPhase("onboard"); };
   const updateProfile = useCallback((patch) => setProfile(prev => ({ ...prev, ...patch })), []);
+  const logout = async () => { await supabase.auth.signOut(); };
 
-  if (!booted) {
-    return <div style={{ minHeight: "100vh", background: PAL.void, color: PAL.cyan, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT_DISPLAY, fontSize: "12px", letterSpacing: "4px" }}>◇ BOOTING ◇</div>;
-  }
+  const acceptMigration = () => {
+    const local = migrateOffer;
+    setMigrateOffer(null);
+    if (!local) return;
+    setProfile(local.profile || {});
+    setGames(local.games || []);
+    setPhase("app"); // triggers the save effect → pushes to cloud
+  };
+  const declineMigration = () => setMigrateOffer(null);
+
+  // Auth is still resolving, or we're signed in but the queue hasn't loaded yet.
+  const showBooting = session === undefined || (session && !booted);
 
   return (
     <>
       <Starfield />
-      {phase === "onboard" ? (
+      {session === null ? (
+        <AuthScreen />
+      ) : showBooting ? (
+        <div style={{ minHeight: "100vh", color: PAL.cyan, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT_DISPLAY, fontSize: "12px", letterSpacing: "4px", position: "relative", zIndex: 1 }}>◇ SYNCING ◇</div>
+      ) : phase === "onboard" ? (
         <Onboarding onDone={finishOnboard} onImport={importSeed} />
       ) : (
         <div style={{ minHeight: "100vh", color: PAL.ink, fontFamily: FONT_BODY, maxWidth: "1000px", margin: "0 auto", position: "relative", zIndex: 1, paddingBottom: "20px" }}>
@@ -4612,12 +4858,15 @@ export default function App() {
             {tab === "lib" && <LibraryTab games={games} onClick={setSelected} onToggle={quickToggle} />}
             {tab === "queue" && <QueueTab games={games} onClick={setSelected} onToggle={quickToggle} onReorder={reorderQueue} />}
             {tab === "stats" && <StatsTab games={games} />}
-            {tab === "profile" && <ProfileTab profile={profile} games={games} onReset={resetAll} onUpdateProfile={updateProfile} />}
+            {tab === "profile" && <ProfileTab profile={profile} games={games} onReset={resetAll} onUpdateProfile={updateProfile} onLogout={logout} email={session?.user?.email} />}
           </div>
           <TabBar tab={tab} setTab={setTab} onAdd={() => setShowAdd(true)} />
           {selected && <GameModal game={selected} onClose={() => setSelected(null)} onUpdate={updateGame} onDelete={deleteGame} />}
           {showAdd && <AddModal onClose={() => setShowAdd(false)} onAdd={addGame} existingGames={games} />}
         </div>
+      )}
+      {session && migrateOffer && (
+        <MigrationModal data={migrateOffer} onUpload={acceptMigration} onSkip={declineMigration} />
       )}
     </>
   );
