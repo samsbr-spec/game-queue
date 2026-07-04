@@ -442,6 +442,29 @@ function getAvailablePlatforms(name) {
   return null;
 }
 
+// A handful of catalog titles whose availability list isn't launch-ordered —
+// mostly PC-first indies that later ported to console. The general heuristic
+// below (first entry of the availability list) is launch-order for the retro
+// catalog but would mis-map these, so they're corrected explicitly.
+const LAUNCH_CONSOLE_OVERRIDES = {
+  "Minecraft": "pc",
+  "Stardew Valley": "pc",
+  "Hades": "pc",
+  "Hollow Knight": "pc",
+  "Celeste": "pc",
+};
+
+// Best-effort "original launch console" for a game. Used by the Library/Queue
+// console filter so a game shows under the platform it debuted on (e.g. Banjo
+// under N64) in addition to wherever you actually played it. Returns null when
+// the game isn't in our platform DB — callers fall back to the played-on
+// console. IGDB (per-platform release dates) will make this exact later.
+function launchConsoleOf(name) {
+  if (LAUNCH_CONSOLE_OVERRIDES[name]) return LAUNCH_CONSOLE_OVERRIDES[name];
+  const plats = getAvailablePlatforms(name);
+  return plats && plats.length ? plats[0] : null;
+}
+
 // ─── SEED LIBRARY ────────────────────────────────────────────────────────────
 const SEED_GAMES = [
   { franchise: "Sonic", name: "Sonic Adventure 2", completed: true, date: "Childhood", console: "gamecube", genre: "Platformer" },
@@ -3600,7 +3623,18 @@ function LibraryTab({ games, onClick, onToggle }) {
   const pagesRef = useRef(null);
 
   const allGenres = useMemo(() => ["ALL", ...new Set(games.map(g => g.genre).filter(Boolean))], [games]);
-  const allConsoles = useMemo(() => ["ALL", ...new Set(games.map(g => g.console).filter(Boolean))], [games]);
+  // Console chips = every console a game was played on OR launched on, so a
+  // launch-platform chip (e.g. N64) appears even if you only played the game
+  // on a later port (e.g. Banjo on Switch).
+  const allConsoles = useMemo(() => {
+    const s = new Set();
+    for (const g of games) {
+      if (g.console) s.add(g.console);
+      const launch = launchConsoleOf(g.name);
+      if (launch) s.add(launch);
+    }
+    return ["ALL", ...s];
+  }, [games]);
 
   const filtered = useMemo(() => {
     let list = games.filter(g => {
@@ -3608,7 +3642,8 @@ function LibraryTab({ games, onClick, onToggle }) {
       if (status === "BACKLOG" && g.completed) return false;
       if (status === "HUNDRED" && !g.percent100) return false;
       if (genre !== "ALL" && g.genre !== genre) return false;
-      if (console_ !== "ALL" && g.console !== console_) return false;
+      // Match the played-on console OR the game's original launch console.
+      if (console_ !== "ALL" && g.console !== console_ && launchConsoleOf(g.name) !== console_) return false;
       if (search && !`${g.name} ${g.franchise}`.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
@@ -4066,7 +4101,16 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
   const queue = useMemo(() => games.filter(g => !g.completed), [games]);
 
   const allGenres = useMemo(() => ["ALL", ...new Set(queue.map(g => g.genre).filter(Boolean))], [queue]);
-  const allConsoles = useMemo(() => ["ALL", ...new Set(queue.map(g => g.console).filter(Boolean))], [queue]);
+  // Chips = every console a queued game was played on OR launched on (see LibraryTab).
+  const allConsoles = useMemo(() => {
+    const s = new Set();
+    for (const g of queue) {
+      if (g.console) s.add(g.console);
+      const launch = launchConsoleOf(g.name);
+      if (launch) s.add(launch);
+    }
+    return ["ALL", ...s];
+  }, [queue]);
 
   // The master queue: always sorted by user's manual queueOrder field.
   // Every view (master/group-by-genre/group-by-console) reads from this.
@@ -4085,7 +4129,8 @@ function QueueTab({ games, onClick, onToggle, onReorder }) {
   const filtered = useMemo(() => {
     return masterOrdered.filter(g => {
       if (genre !== "ALL" && g.genre !== genre) return false;
-      if (console_ !== "ALL" && g.console !== console_) return false;
+      // Match the played-on console OR the game's original launch console.
+      if (console_ !== "ALL" && g.console !== console_ && launchConsoleOf(g.name) !== console_) return false;
       return true;
     });
   }, [masterOrdered, genre, console_]);
