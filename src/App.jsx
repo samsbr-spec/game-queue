@@ -273,13 +273,20 @@ const GAME_DB = [
   {name:"Tony Hawk's Pro Skater 1+2",franchise:"Tony Hawk's",genre:"Sports",year:2020,cover:"c/cb/Tony_Hawk%27s_Pro_Skater_1+2.jpg"},
   {name:"Rocket League",franchise:"Rocket League",genre:"Sports",year:2015,cover:"f/f1/Rocket_League_coverart.jpg"},
   {name:"MLB The Show 24",franchise:"MLB The Show",genre:"Sports",year:2024,cover:"f/fc/MLB_The_Show_24_cover_art.jpg"},
+  // Switch 2 era
+  {name:"Orbitals",franchise:"Orbitals",genre:"Puzzle",year:2026},
 ];
 
 // Build full Wikipedia URL
+// Entries added before a title reached GAME_DB (or via Browse, which doesn't
+// copy `cover`) carry no cover of their own, so fall back to the catalog by
+// exact name — catalog updates then light up existing library boxes too.
 function coverUrl(game) {
-  if (!game.cover) return null;
-  const filename = game.cover.split("/").pop();
-  return `https://upload.wikimedia.org/wikipedia/en/thumb/${game.cover}/300px-${filename}`;
+  const n = (game.name || "").toLowerCase();
+  const cover = game.cover || GAME_DB.find(g => g.name.toLowerCase() === n)?.cover;
+  if (!cover) return null;
+  const filename = cover.split("/").pop();
+  return `https://upload.wikimedia.org/wikipedia/en/thumb/${cover}/300px-${filename}`;
 }
 
 function searchGames(query, limit = 8) {
@@ -435,6 +442,7 @@ const PLATFORM_OVERRIDES = {
   "Tony Hawk's Pro Skater 1+2": ["ps4", "ps5", "xboxone", "xboxseries", "switch", "pc"],
   "Rocket League": ["ps4", "ps5", "xboxone", "xboxseries", "switch", "pc"],
   "MLB The Show 24": ["ps4", "ps5", "xboxone", "xboxseries", "switch"],
+  "Orbitals": ["switch"],
 };
 
 function getAvailablePlatforms(name) {
