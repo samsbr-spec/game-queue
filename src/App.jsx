@@ -4591,9 +4591,21 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
 // Effective beat date used for ordering a Stats dropdown: the precise date when
 // known, else the start of the year bucket, else a low sentinel so "Childhood"
 // and undated games sink to the bottom.
+const MONTH_NAMES = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+const pad2 = n => String(n).padStart(2, "0");
 function beatKey(g) {
   if (g.beatenOn) return g.beatenOn;
   const d = (g.date || "").trim();
+  let m;
+  // MM/DD/YYYY (the app's display format) — a precise date typed into the label.
+  if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(d))) return `${m[3]}-${pad2(m[1])}-${pad2(m[2])}`;
+  // YYYY-MM-DD / YYYY-MM
+  if ((m = /^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/.exec(d))) return `${m[1]}-${pad2(m[2])}-${pad2(m[3] || 0)}`;
+  // "March 2024" / "Mar 2024"
+  if ((m = /^([a-z]+)\s+(\d{4})$/i.exec(d))) {
+    const mi = MONTH_NAMES.indexOf(m[1].slice(0, 3).toLowerCase());
+    if (mi >= 0) return `${m[2]}-${pad2(mi + 1)}-00`;
+  }
   const y = /\b(\d{4})\b/.exec(d);
   if (y) return `${y[1]}-00-00`;
   if (d.toLowerCase() === "childhood") return "0001-00-00";
