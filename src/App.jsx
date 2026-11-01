@@ -4594,9 +4594,19 @@ function QueueTab({ games, onClick, onToggle, onReorder, onCloseModal }) {
 function beatKey(g) {
   if (g.beatenOn) return g.beatenOn;
   const d = (g.date || "").trim();
-  if (/^\d{4}$/.test(d)) return `${d}-00-00`;
+  const y = /\b(\d{4})\b/.exec(d);
+  if (y) return `${y[1]}-00-00`;
   if (d.toLowerCase() === "childhood") return "0001-00-00";
   return "0000-00-00";
+}
+// The Timeline bucket a beaten game belongs to: the first 4-digit year found
+// anywhere in its date label (so "2026", "10/31/2026", "March 2024" and
+// "2024-03-01" all group under their year), else the raw label ("Childhood"),
+// else nothing (undated).
+function timelineYear(g) {
+  const d = (g.date || "").trim();
+  const m = /\b(\d{4})\b/.exec(d);
+  return m ? m[1] : d;
 }
 // Order games within a Stats dropdown by date beaten, most recent first;
 // ties (same year / same bucket) fall back to alphabetical.
@@ -4661,12 +4671,12 @@ function StatsTab({ games }) {
   }, [completed]);
   const byYear = useMemo(() => {
     const m = {};
-    completed.forEach(g => { if (g.date) m[g.date] = (m[g.date] || 0) + 1; });
+    completed.forEach(g => { const y = timelineYear(g); if (y) m[y] = (m[y] || 0) + 1; });
     return Object.entries(m).sort(([a],[b]) => { if (a === "Childhood") return 1; if (b === "Childhood") return -1; return parseInt(b) - parseInt(a); });
   }, [completed]);
   // Games grouped for each section's expandable dropdown, each sorted
   // newest-beaten first (see beatenCmp).
-  const gamesByYear = useMemo(() => groupBeaten(completed, g => g.date), [completed]);
+  const gamesByYear = useMemo(() => groupBeaten(completed, timelineYear), [completed]);
   const gamesByGenre = useMemo(() => groupBeaten(completed, g => g.genre || "Other"), [completed]);
   const gamesByConsole = useMemo(() => groupBeaten(completed, g => g.console), [completed]);
   const gamesByFranchise = useMemo(() => groupBeaten(completed, g => g.franchise), [completed]);
